@@ -31,7 +31,7 @@ class TestCliGroup:
     def test_help(self, runner):
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        assert "Search dashcam footage" in result.output or "search" in result.output.lower()
+        assert "搜索" in result.output or "search" in result.output.lower()
 
 
 class TestStatsCommand:
@@ -45,7 +45,7 @@ class TestStatsCommand:
             MockStore.return_value = inst
             result = runner.invoke(cli, ["stats"])
             assert result.exit_code == 0
-            assert "empty" in result.output.lower() or "0" in result.output
+            assert "索引为空" in result.output or "0" in result.output
 
     def test_stats_with_data(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -73,7 +73,7 @@ class TestSearchCommand:
             MockStore.return_value = inst
             result = runner.invoke(cli, ["search", "red car"])
             assert result.exit_code == 0
-            assert "No indexed footage" in result.output
+            assert "未找到已索引的视频" in result.output
 
 
 class TestIndexCommand:
@@ -85,7 +85,7 @@ class TestIndexCommand:
             MockStore.return_value = MagicMock()
             result = runner.invoke(cli, ["index", str(empty_dir)])
             assert result.exit_code == 0
-            assert "No supported video files found" in result.output
+            assert "未找到支持的视频文件" in result.output
 
     def test_index_accepts_backend_option(self, runner, tmp_path):
         empty_dir = tmp_path / "empty"
@@ -284,7 +284,7 @@ class TestIndexCommand:
 
         assert result.exit_code == 0, result.output
         mock_chunk_video.assert_not_called()
-        assert "already indexed" in result.output
+        assert "已编入索引" in result.output
 
     def test_index_retry_failed_reattempts_dlq_chunks(self, runner, tmp_path):
         d = tmp_path / "vids"
@@ -387,7 +387,7 @@ class TestShellCommand:
              patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()):
             result = runner.invoke(cli, ["shell"])
         assert result.exit_code == 0
-        assert "No indexed footage" in result.output
+        assert "未找到已索引的视频" in result.output
 
     def test_shell_loads_embedder_once(self, runner):
         fake_results = [
@@ -428,14 +428,14 @@ class TestShellCommand:
             runner, input_lines=":n abc\n:quit\n",
         )
         assert result.exit_code == 0
-        assert "usage: :n" in result.output
+        assert "用法" in result.output
 
     def test_shell_unknown_command(self, runner):
         result, _, mock_search, _ = self._setup_mocks(
             runner, input_lines=":bogus\n:quit\n",
         )
         assert result.exit_code == 0
-        assert "unknown command" in result.output
+        assert "未知命令" in result.output
         mock_search.assert_not_called()
 
     def test_shell_eof_exits_cleanly(self, runner):
@@ -451,7 +451,7 @@ class TestShellCommand:
             search_results=[[]],
         )
         assert result.exit_code == 0
-        assert "(no results)" in result.output
+        assert "无结果" in result.output
 
     def test_shell_low_confidence_warning(self, runner):
         low_conf = [
@@ -464,7 +464,7 @@ class TestShellCommand:
             search_results=[low_conf],
         )
         assert result.exit_code == 0
-        assert "low confidence" in result.output
+        assert "置信度较低" in result.output
 
     def test_shell_search_error_kept_alive(self, runner):
         """A query failure should print the error but not kill the REPL."""
@@ -479,7 +479,7 @@ class TestShellCommand:
                    side_effect=[RuntimeError("boom"), []]) as mock_search:
             result = runner.invoke(cli, ["shell"], input="a\nb\n:quit\n")
         assert result.exit_code == 0
-        assert "Error: boom" in result.output
+        assert "错误：boom" in result.output
         assert mock_search.call_count == 2  # REPL survived first failure
 
 
@@ -490,7 +490,7 @@ class TestDlqCommand:
         with patch("sentrysearch.dlq.DeadLetterQueue", return_value=empty):
             result = runner.invoke(cli, ["dlq", "list"])
         assert result.exit_code == 0
-        assert "empty" in result.output.lower()
+        assert "DLQ 为空" in result.output
 
     def test_dlq_list_shows_entries(self, runner, tmp_path):
         from sentrysearch.dlq import DeadLetterQueue
@@ -519,7 +519,7 @@ class TestDlqCommand:
         with patch("sentrysearch.dlq.DeadLetterQueue", return_value=q):
             result = runner.invoke(cli, ["dlq", "clear"], input="y\n")
         assert result.exit_code == 0
-        assert "Cleared 1" in result.output
+        assert "已清除" in result.output
         assert len(q) == 0
 
 
@@ -587,7 +587,7 @@ class TestIndexLocalFlags:
             ])
             assert result.exit_code == 0
             # Should have inferred backend="local" from --model
-            mock_get.assert_called_once_with("local", model="qwen2b", quantize=None)
+            mock_get.assert_called_once_with("local", model="qwen2b", quantize=None, base_url=None, api_key=None)
 
     def test_index_passes_backend_and_model_to_store(self, runner, tmp_path):
         d = tmp_path / "vids"
@@ -615,7 +615,7 @@ class TestSearchShellTip:
                 "search", "test", "--backend", "local", "--model", "qwen2b",
             ])
         assert result.exit_code == 0
-        assert "shell" in result.output and "keeps the model loaded" in result.output
+        assert "shell" in result.output and "保持模型加载状态" in result.output
 
     def test_tip_not_shown_for_gemini_backend(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -627,7 +627,7 @@ class TestSearchShellTip:
             MockStore.return_value = inst
             result = runner.invoke(cli, ["search", "test"])
         assert result.exit_code == 0
-        assert "keeps the model loaded" not in result.output
+        assert "保持模型加载状态" not in result.output
 
 
 class TestSearchLocalFlags:
@@ -642,7 +642,7 @@ class TestSearchLocalFlags:
                 "search", "test query", "--backend", "local", "--model", "qwen2b",
             ])
             assert result.exit_code == 0
-            mock_get.assert_called_with("local", model="qwen2b", quantize=None)
+            mock_get.assert_called_with("local", model="qwen2b", quantize=None, base_url=None, api_key=None)
 
     def test_search_passes_quantize_to_embedder(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -656,7 +656,7 @@ class TestSearchLocalFlags:
                 "search", "test query", "--backend", "local", "--quantize",
             ])
             assert result.exit_code == 0
-            mock_get.assert_called_with("local", model="qwen8b", quantize=True)
+            mock_get.assert_called_with("local", model="qwen8b", quantize=True, base_url=None, api_key=None)
 
     def test_search_model_implies_local_backend(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -670,7 +670,7 @@ class TestSearchLocalFlags:
             ])
             assert result.exit_code == 0
             # --model qwen2b should imply --backend local
-            mock_get.assert_called_with("local", model="qwen2b", quantize=None)
+            mock_get.assert_called_with("local", model="qwen2b", quantize=None, base_url=None, api_key=None)
 
     def test_search_auto_detects_backend_and_model(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -683,7 +683,7 @@ class TestSearchLocalFlags:
             # No --backend or --model flags
             result = runner.invoke(cli, ["search", "test query"])
             assert result.exit_code == 0
-            mock_get.assert_called_with("local", model="qwen2b", quantize=None)
+            mock_get.assert_called_with("local", model="qwen2b", quantize=None, base_url=None, api_key=None)
             MockStore.assert_called_once_with(backend="local", model="qwen2b")
 
     def test_search_wrong_model_shows_suggestion(self, runner):
@@ -756,7 +756,7 @@ class TestLastClipCache:
         data = self._read_cache(_isolated_cache)
         assert data["path"] == os.path.abspath("/tmp/clip1.mp4")
         assert data["saved_by"] == "sentrysearch"
-        assert "Saved clip path cached for sentryblur" in result.output
+        assert "已为 sentryblur --last 缓存 clip 路径" in result.output
 
     def test_search_save_top_3_caches_rank_1(self, runner, _isolated_cache):
         results = [
@@ -847,7 +847,7 @@ class TestLastClipCache:
             result = runner.invoke(cli, ["search", "test", "--save-top", "1"])
 
         assert result.exit_code == 0
-        assert "warning" in result.output.lower()
+        assert "警告" in result.output
         assert "disk full" in result.output
 
 
@@ -862,7 +862,7 @@ class TestImgCommand:
             MockStore.return_value = inst
             result = runner.invoke(cli, ["img", str(img_path)])
         assert result.exit_code == 0
-        assert "No indexed footage" in result.output
+        assert "未找到已索引的视频" in result.output
 
     def test_img_calls_search_by_image(self, runner, tmp_path):
         img_path = tmp_path / "q.jpg"
@@ -897,7 +897,7 @@ class TestImgCommand:
                 "--no-trim",
             ])
         assert result.exit_code == 0, result.output
-        mock_get.assert_called_with("local", model="qwen2b", quantize=None)
+        mock_get.assert_called_with("local", model="qwen2b", quantize=None, base_url=None, api_key=None)
 
     def test_img_missing_file_errors(self, runner):
         result = runner.invoke(cli, ["img", "/nonexistent/x.jpg"])
@@ -951,7 +951,7 @@ class TestResetCommand:
             MockStore.return_value = inst
             result = runner.invoke(cli, ["reset", "--yes"])
             assert result.exit_code == 0
-            assert "already empty" in result.output.lower()
+            assert "已经为空" in result.output
 
     def test_reset_removes_all(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -982,7 +982,7 @@ class TestRemoveCommand:
             MockStore.return_value = inst
             result = runner.invoke(cli, ["remove", "video1"])
             assert result.exit_code == 0
-            assert "Removed 5 chunks" in result.output
+            assert "已删除" in result.output and "5" in result.output
             inst.remove_file.assert_called_once_with("/a/video1.mp4")
 
     def test_remove_no_match(self, runner):
@@ -996,7 +996,7 @@ class TestRemoveCommand:
             MockStore.return_value = inst
             result = runner.invoke(cli, ["remove", "nonexistent"])
             assert result.exit_code == 0
-            assert "No indexed files matching" in result.output
+            assert "没有匹配" in result.output and "已索引文件" in result.output
 
     def test_remove_empty_index(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -1008,4 +1008,4 @@ class TestRemoveCommand:
             MockStore.return_value = inst
             result = runner.invoke(cli, ["remove", "anything"])
             assert result.exit_code == 0
-            assert "empty" in result.output.lower()
+            assert "索引为空" in result.output

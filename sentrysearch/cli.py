@@ -1,4 +1,4 @@
-"""Click-based CLI entry point."""
+"""基于 Click 的 CLI 入口。"""
 
 import os
 import platform
@@ -15,17 +15,32 @@ load_dotenv(_ENV_PATH)
 load_dotenv()  # cwd .env can override
 
 
+def _resolve_remote_url(cli_url: str | None = None) -> str:
+    """从 CLI 参数或环境变量解析远程 API 地址。"""
+    url = cli_url or os.environ.get("REMOTE_EMBED_URL")
+    if not url:
+        raise click.UsageError(
+            "Remote backend requires --remote-url or REMOTE_EMBED_URL environment variable.\n"
+            "Example: sentrysearch index <dir> --backend remote --remote-url http://localhost:8000"
+        )
+    return url
+
+
+def _resolve_remote_api_key(cli_key: str | None = None) -> str | None:
+    """从 CLI 参数或环境变量解析远程 API 密钥。"""
+    return cli_key or os.environ.get("REMOTE_EMBED_API_KEY")
+
+
 def _fmt_time(seconds: float) -> str:
-    """Format seconds as MM:SS."""
+    """将秒数格式化为 MM:SS 格式。"""
     m, s = divmod(int(seconds), 60)
     return f"{m:02d}:{s:02d}"
 
 
 def _cache_last_clip(path: str) -> None:
-    """Record path as the most-recent clip for cross-tool integration.
+    """记录最近保存的 clip 路径，供 sentryblur --last 跨工具集成使用。
 
-    Failures are non-fatal — the cache is a UX nicety, not a correctness
-    requirement.
+    缓存失败不致命 — 这是体验优化，非正确性要求。
     """
     from pathlib import Path
 
@@ -33,16 +48,16 @@ def _cache_last_clip(path: str) -> None:
 
     try:
         _toolkit_cache.write_last_clip(Path(os.path.abspath(path)))
-        click.echo("Saved clip path cached for sentryblur --last", err=True)
+        click.echo("已为 sentryblur --last 缓存 clip 路径", err=True)
     except Exception as e:
         click.secho(
-            f"(warning: could not write last-clip cache: {e})",
+            f"（警告：无法写入 last-clip 缓存：{e}）",
             fg="yellow", err=True,
         )
 
 
 def _open_file(path: str) -> None:
-    """Open a file with the system's default application."""
+    """用系统默认应用打开文件。"""
     try:
         system = platform.system()
         if system == "Darwin":
@@ -56,13 +71,13 @@ def _open_file(path: str) -> None:
 
 
 def _overlay_output_path(path: str) -> str:
-    """Return the default overlay output path for a source video."""
+    """返回源视频的默认叠加层输出路径。"""
     base, _ext = os.path.splitext(path)
     return f"{base}_overlay.mp4"
 
 
 def _is_permanent_failure(exc: Exception) -> bool:
-    """Return True for errors that won't resolve by retrying the same chunk."""
+    """判断错误是否为不可恢复的永久性错误（重试同一片段无济于事）。"""
     msg = str(exc).lower()
     if isinstance(exc, FileNotFoundError):
         return True
@@ -84,10 +99,10 @@ def _embed_with_retry(
     max_attempts: int = 3,
     verbose: bool = False,
 ) -> list[float] | None:
-    """Embed a chunk with retries. On permanent/exhausted failure, record
-    to the DLQ and return None so the caller can continue.
+    """对片段进行嵌入并支持重试。永久性或耗尽失败时记录到 DLQ
+    并返回 None，以便调用方继续处理。
 
-    Quota errors bubble up — the user needs to stop and wait.
+    配额错误会向上抛出 — 用户需要停止并等待。
     """
     import time as _time
     from .gemini_embedder import GeminiAPIKeyError, GeminiQuotaError
@@ -131,36 +146,36 @@ def _embed_with_retry(
 
 
 def _handle_error(e: Exception) -> None:
-    """Print a user-friendly error and exit."""
+    """打印用户友好的错误信息并退出。"""
     from .gemini_embedder import GeminiAPIKeyError, GeminiQuotaError
     from .local_embedder import LocalModelError
     from .store import BackendMismatchError
 
     if isinstance(e, GeminiAPIKeyError):
-        click.secho("Error: " + str(e), fg="red", err=True)
+        click.secho("错误：" + str(e), fg="red", err=True)
         raise SystemExit(1)
     if isinstance(e, GeminiQuotaError):
-        click.secho("Error: " + str(e), fg="yellow", err=True)
+        click.secho("错误：" + str(e), fg="yellow", err=True)
         raise SystemExit(1)
     if isinstance(e, LocalModelError):
-        click.secho("Error: " + str(e), fg="red", err=True)
+        click.secho("错误：" + str(e), fg="red", err=True)
         raise SystemExit(1)
     if isinstance(e, BackendMismatchError):
-        click.secho("Error: " + str(e), fg="red", err=True)
+        click.secho("错误：" + str(e), fg="red", err=True)
         raise SystemExit(1)
     if isinstance(e, PermissionError):
-        click.secho("Error: " + str(e), fg="red", err=True)
+        click.secho("错误：" + str(e), fg="red", err=True)
         raise SystemExit(1)
     if isinstance(e, FileNotFoundError):
-        click.secho("Error: " + str(e), fg="red", err=True)
+        click.secho("错误：" + str(e), fg="red", err=True)
         raise SystemExit(1)
     if isinstance(e, RuntimeError) and "ffmpeg not found" in str(e).lower():
         click.secho(
-            "Error: ffmpeg is not available.\n\n"
-            "Install it with one of:\n"
+            "错误：ffmpeg 不可用。\n\n"
+            "请使用以下方式之一安装：\n"
             "  Ubuntu/Debian:  sudo apt install ffmpeg\n"
             "  macOS:          brew install ffmpeg\n"
-            "  pip fallback:   uv add imageio-ffmpeg",
+            "  pip 备选方案:   uv add imageio-ffmpeg",
             fg="red",
             err=True,
         )
@@ -176,16 +191,16 @@ def _apply_overlay_to_clip(
     *,
     replace: bool = True,
 ) -> bool:
-    """Apply Tesla telemetry overlay to a clip. Returns True on success.
+    """将 Tesla 遥测叠加层烧录到 clip 上。成功返回 True。
 
-    When *replace* is True the overlay is written over *clip_path* in-place.
+    当 *replace* 为 True 时，叠加层会原地写入 *clip_path*。
     """
     from .overlay import apply_overlay, get_metadata_samples, reverse_geocode
 
     samples = get_metadata_samples(source_file, start_time, end_time)
     if samples is None:
         click.secho(
-            "No Tesla SEI metadata found — skipping overlay.",
+            "未找到 Tesla SEI 元数据 — 跳过叠加层。",
             fg="yellow", err=True,
         )
         return False
@@ -195,12 +210,12 @@ def _apply_overlay_to_clip(
     lat = mid.get("latitude_deg", 0.0)
     lon = mid.get("longitude_deg", 0.0)
     if lat and lon:
-        click.echo("Reverse geocoding location...")
+        click.echo("正在反查地理位置...")
         location = reverse_geocode(lat, lon)
         if location is None:
             click.secho(
-                "Geocoding failed — continuing without location. "
-                "Install deps with: uv tool install \".[tesla]\"",
+                "地理编码失败 — 继续不带位置信息。"
+                "安装依赖：uv tool install \".[tesla]\"",
                 fg="yellow", err=True,
             )
 
@@ -213,16 +228,16 @@ def _apply_overlay_to_clip(
     if result_path == overlay_path and os.path.isfile(overlay_path):
         if replace:
             os.replace(overlay_path, clip_path)
-        click.echo("Applied Tesla metadata overlay")
+        click.echo("已应用 Tesla 元数据叠加层")
         return True
 
-    click.secho("Overlay failed.", fg="yellow", err=True)
+    click.secho("叠加层应用失败。", fg="yellow", err=True)
     return False
 
 
 @click.group()
 def cli():
-    """Search dashcam footage using natural language queries."""
+    """使用自然语言查询搜索行车记录仪视频。"""
 
 
 # -----------------------------------------------------------------------
@@ -231,7 +246,7 @@ def cli():
 
 @cli.command()
 def init():
-    """Set up your Gemini API key for sentrysearch."""
+    """配置 sentrysearch 的 Gemini API 密钥。"""
     env_path = _ENV_PATH
     os.makedirs(os.path.dirname(env_path), exist_ok=True)
 
@@ -240,13 +255,13 @@ def init():
         with open(env_path) as f:
             contents = f.read()
         if "GEMINI_API_KEY=" in contents:
-            if not click.confirm("API key already configured. Overwrite?", default=False):
+            if not click.confirm("API 密钥已配置，是否覆盖？", default=False):
                 return
 
     api_key = click.prompt(
-        "Enter your Gemini API key\n"
-        "  Get one at https://aistudio.google.com/apikey\n"
-        "  (input is hidden)",
+        "请输入你的 Gemini API 密钥\n"
+        "  在 https://aistudio.google.com/apikey 获取\n"
+        "  （输入内容已隐藏）",
         hide_input=True,
     )
 
@@ -270,7 +285,7 @@ def init():
 
     # Validate by embedding a test string
     os.environ["GEMINI_API_KEY"] = api_key
-    click.echo("Validating API key...")
+    click.echo("正在验证 API 密钥...")
     try:
         from .embedder import get_embedder
 
@@ -278,8 +293,8 @@ def init():
         vec = embedder.embed_query("test")
         if len(vec) != 768:
             click.secho(
-                f"Unexpected embedding dimension: {len(vec)} (expected 768). "
-                "The key may be valid but something is off.",
+                f"嵌入维度异常：{len(vec)}（预期 768）。"
+                "密钥可能有效，但存在其他问题。",
                 fg="yellow",
                 err=True,
             )
@@ -287,18 +302,18 @@ def init():
     except SystemExit:
         raise
     except Exception as e:
-        click.secho(f"Validation failed: {e}", fg="red", err=True)
-        click.secho("Please check your API key and try again.", fg="red", err=True)
+        click.secho(f"验证失败：{e}", fg="red", err=True)
+        click.secho("请检查你的 API 密钥并重试。", fg="red", err=True)
         raise SystemExit(1)
 
     click.secho(
-        "Setup complete. You're ready to go — run "
-        "`sentrysearch index <directory>` to get started.",
+        "配置完成。你可以运行 "
+        "`sentrysearch index <目录>` 开始使用。",
         fg="green",
     )
     click.secho(
-        "\nTip: Set a spending limit at https://aistudio.google.com/billing "
-        "to prevent accidental overspending.",
+        "\n提示：在 https://aistudio.google.com/billing 设置消费限额，"
+        "以防止意外超支。",
         fg="yellow",
     )
 
@@ -310,30 +325,34 @@ def init():
 @cli.command()
 @click.argument("directory", type=click.Path(exists=True, file_okay=True, dir_okay=True))
 @click.option("--chunk-duration", default=30, show_default=True,
-              help="Chunk duration in seconds.")
+              help="片段时长（秒）。")
 @click.option("--overlap", default=5, show_default=True,
-              help="Overlap between chunks in seconds.")
+              help="片段间重叠时长（秒）。")
 @click.option("--preprocess/--no-preprocess", default=True, show_default=True,
-              help="Downscale and reduce frame rate before embedding.")
+              help="编入索引前降低分辨率和帧率。")
 @click.option("--target-resolution", default=480, show_default=True,
-              help="Target video height in pixels for preprocessing.")
+              help="预处理目标视频高度（像素）。")
 @click.option("--target-fps", default=5, show_default=True,
-              help="Target frames per second for preprocessing.")
+              help="预处理目标帧率。")
 @click.option("--skip-still/--no-skip-still", default=True, show_default=True,
-              help="Skip chunks with no meaningful visual change.")
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
-              help="Embedding backend (default: gemini, or local when --model is set).")
+              help="跳过无显著视觉变化的片段。")
+@click.option("--backend", type=click.Choice(["gemini", "local", "remote"]), default=None,
+              help="嵌入后端（默认 gemini，设置 --model 时为 local）。")
 @click.option("--model", default=None, show_default=False,
-              help="Model for local backend: qwen8b, qwen2b, or HuggingFace ID "
-                   "(default: auto-detect from hardware). Implies --backend local.")
+              help="本地后端模型：qwen8b、qwen2b 或 HuggingFace ID "
+                   "（默认自动检测硬件）。隐含 --backend local。")
 @click.option("--quantize/--no-quantize", default=None,
-              help="Enable/disable 4-bit quantization for local backend (default: auto-detect).")
+              help="启用/禁用本地后端的 4-bit 量化（默认自动检测）。")
+@click.option("--remote-url", default=None,
+              help="远程嵌入 API 地址（如 http://localhost:8000）。隐含 --backend remote。")
+@click.option("--remote-api-key", default=None,
+              help="远程嵌入服务 API 密钥（或设置 REMOTE_EMBED_API_KEY）。")
 @click.option("--retry-failed", is_flag=True,
-              help="Retry chunks that previously failed and were routed to the DLQ.")
-@click.option("--verbose", is_flag=True, help="Show debug info.")
+              help="重试之前失败并被路由到 DLQ 的片段。")
+@click.option("--verbose", is_flag=True, help="显示调试信息。")
 def index(directory, chunk_duration, overlap, preprocess, target_resolution,
-          target_fps, skip_still, backend, model, quantize, retry_failed, verbose):
-    """Index supported video files in DIRECTORY for searching."""
+          target_fps, skip_still, backend, model, quantize, remote_url, remote_api_key, retry_failed, verbose):
+    """将 DIRECTORY 中的视频文件编入索引以供搜索。"""
     from .chunker import (
         SUPPORTED_VIDEO_EXTENSIONS,
         _get_video_duration,
@@ -355,22 +374,34 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
                 param_hint="'--overlap'",
             )
 
-        # --model implies --backend local
+        # --model implies --backend local, --remote-url implies --backend remote
         if model is not None and backend is None:
             backend = "local"
+        if remote_url is not None and backend is None:
+            backend = "remote"
         if backend is None:
             backend = "gemini"
 
         # Auto-detect model from hardware when using local backend
         if backend == "local" and model is None:
             model = detect_default_model()
-            click.echo(f"Auto-detected model: {model}", err=True)
+            click.echo(f"自动检测到模型：{model}", err=True)
 
         # Normalize model key for consistent collection naming
         if backend == "local":
             model = normalize_model_key(model)
 
-        embedder = get_embedder(backend, model=model, quantize=quantize)
+        # Resolve remote URL and API key
+        if backend == "remote":
+            remote_url = _resolve_remote_url(remote_url)
+            api_key = _resolve_remote_api_key(remote_api_key)
+            model = model or "Qwen/Qwen3-VL-Embedding-8B"
+
+        embedder = get_embedder(
+            backend, model=model, quantize=quantize,
+            base_url=remote_url if backend == "remote" else None,
+            api_key=api_key if backend == "remote" else None,
+        )
 
         if os.path.isfile(directory):
             videos = [os.path.abspath(directory)]
@@ -379,10 +410,10 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
 
         if not videos:
             supported = ", ".join(SUPPORTED_VIDEO_EXTENSIONS)
-            click.echo(f"No supported video files found ({supported}).")
+            click.echo(f"未找到支持的视频文件（{supported}）。")
             return
 
-        store = SentryStore(backend=backend, model=model)
+        store = SentryStore(backend=backend, model=model if backend in ("local", "remote") else None)
         dlq = DeadLetterQueue()
         total_files = len(videos)
         new_files = 0
@@ -391,8 +422,8 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
         dlq_chunks = 0
 
         if verbose:
-            click.echo(f"[verbose] DB path: {store._client._identifier}", err=True)
-            click.echo(f"[verbose] backend={backend}, chunk_duration={chunk_duration}s, overlap={overlap}s", err=True)
+            click.echo(f"[verbose] 数据库路径：{store._client._identifier}", err=True)
+            click.echo(f"[verbose] 后端={backend}, 片段时长={chunk_duration}s, 重叠={overlap}s", err=True)
 
         for file_idx, video_path in enumerate(videos, 1):
             abs_path = os.path.abspath(video_path)
@@ -412,8 +443,8 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
                     for s, _ in expected_spans
                 ):
                     click.echo(
-                        f"Skipping ({file_idx}/{total_files}): {basename} "
-                        f"(already indexed)"
+                        f"跳过 ({file_idx}/{total_files})：{basename} "
+                        f"（已编入索引）"
                     )
                     continue
             except Exception:
@@ -425,7 +456,7 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
             file_new_chunks = 0
 
             if verbose:
-                click.echo(f"  [verbose] {basename}: duration split into {num_chunks} chunks", err=True)
+                click.echo(f"  [verbose] {basename}：时长拆分为 {num_chunks} 个片段", err=True)
 
             # Track files to clean up after processing
             files_to_cleanup = []
@@ -452,8 +483,8 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
                             )
                     else:
                         click.echo(
-                            f"Skipping chunk {chunk_idx}/{num_chunks} (in DLQ — "
-                            f"use --retry-failed to re-attempt)"
+                            f"跳过片段 {chunk_idx}/{num_chunks}（在 DLQ 中 — "
+                            f"使用 --retry-failed 重试）"
                         )
                         files_to_cleanup.append(chunk["chunk_path"])
                         continue
@@ -462,15 +493,15 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
                     chunk["chunk_path"], verbose=verbose,
                 ):
                     click.echo(
-                        f"Skipping chunk {chunk_idx}/{num_chunks} (still frame)"
+                        f"跳过片段 {chunk_idx}/{num_chunks}（静态帧）"
                     )
                     skipped_chunks += 1
                     files_to_cleanup.append(chunk["chunk_path"])
                     continue
 
                 click.echo(
-                    f"Indexing file {file_idx}/{total_files}: {basename} "
-                    f"[chunk {chunk_idx}/{num_chunks}]"
+                    f"正在索引文件 {file_idx}/{total_files}：{basename} "
+                    f"[片段 {chunk_idx}/{num_chunks}]"
                 )
 
                 embed_path = chunk["chunk_path"]
@@ -484,9 +515,9 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
                     if verbose:
                         new_size = os.path.getsize(embed_path)
                         click.echo(
-                            f"    [verbose] preprocess: {original_size / 1024:.0f}KB -> "
+                            f"    [verbose] 预处理：{original_size / 1024:.0f}KB -> "
                             f"{new_size / 1024:.0f}KB "
-                            f"({100 * (1 - new_size / original_size):.0f}% reduction)",
+                            f"（缩减 {100 * (1 - new_size / original_size):.0f}%）",
                             err=True,
                         )
                     if embed_path != chunk["chunk_path"]:
@@ -530,19 +561,19 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
         stats = store.get_stats()
         parts = []
         if skipped_chunks:
-            parts.append(f"skipped {skipped_chunks} still")
+            parts.append(f"跳过 {skipped_chunks} 个静态片段")
         if dlq_chunks:
-            parts.append(f"{dlq_chunks} failed → DLQ")
-        extra = f" ({', '.join(parts)})" if parts else ""
+            parts.append(f"{dlq_chunks} 个失败 → DLQ")
+        extra = f"（{', '.join(parts)}）" if parts else ""
         click.echo(
-            f"\nIndexed {new_chunks} new chunks from {new_files} files{extra}. "
-            f"Total: {stats['total_chunks']} chunks from "
-            f"{stats['unique_source_files']} files."
+            f"\n已从 {new_files} 个文件索引 {new_chunks} 个新片段{extra}。"
+            f"总计：{stats['total_chunks']} 个片段，"
+            f"{stats['unique_source_files']} 个源文件。"
         )
         if dlq_chunks:
             click.secho(
-                f"See `sentrysearch dlq list` for details. "
-                f"Retry with `sentrysearch index <dir> --retry-failed`.",
+                f"详情见 `sentrysearch dlq list`。"
+                f"使用 `sentrysearch index <目录> --retry-failed` 重试。",
                 fg="yellow",
             )
 
@@ -559,27 +590,31 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
 @cli.command()
 @click.argument("query")
 @click.option("-n", "--results", "n_results", default=5, show_default=True,
-              help="Number of results to return.")
+              help="返回结果数量。")
 @click.option("-o", "--output-dir", default="~/sentrysearch_clips", show_default=True,
-              help="Directory to save trimmed clips.")
+              help="保存剪辑视频的目录。")
 @click.option("--trim/--no-trim", default=True, show_default=True,
-              help="Auto-trim the top result.")
+              help="自动截取排名最高的结果。")
 @click.option("--save-top", default=None, type=click.IntRange(min=1),
-              help="Save the top N matching clips instead of just the #1 result (e.g. --save-top 3).")
+              help="保存前 N 个匹配的剪辑视频（如 --save-top 3）。")
 @click.option("--threshold", default=0.41, show_default=True, type=float,
-              help="Minimum similarity score to consider a confident match.")
+              help="视为可信匹配的最低相似度分数。")
 @click.option("--overlay/--no-overlay", default=False, show_default=True,
-              help="Burn Tesla telemetry overlay (speed, GPS, turn signals) onto trimmed clip.")
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
-              help="Embedding backend (auto-detected from index if omitted).")
+              help="将 Tesla 遥测叠加层（速度、GPS、转向灯）烧录到剪辑视频。")
+@click.option("--backend", type=click.Choice(["gemini", "local", "remote"]), default=None,
+              help="嵌入后端（省略时从索引自动检测）。")
 @click.option("--model", default=None, show_default=False,
-              help="Model for local backend: qwen8b, qwen2b, or HuggingFace ID "
-                   "(default: auto-detect from index). Implies --backend local.")
+              help="本地后端模型：qwen8b、qwen2b 或 HuggingFace ID "
+                   "（默认从索引自动检测）。隐含 --backend local。")
 @click.option("--quantize/--no-quantize", default=None,
-              help="Enable/disable 4-bit quantization for local backend (default: auto-detect).")
-@click.option("--verbose", is_flag=True, help="Show debug info.")
-def search(query, n_results, output_dir, trim, save_top, threshold, overlay, backend, model, quantize, verbose):
-    """Search indexed footage with a natural language QUERY."""
+              help="启用/禁用本地后端的 4-bit 量化（默认自动检测）。")
+@click.option("--remote-url", default=None,
+              help="远程嵌入 API 地址。隐含 --backend remote。")
+@click.option("--remote-api-key", default=None,
+              help="远程嵌入服务 API 密钥（或设置 REMOTE_EMBED_API_KEY）。")
+@click.option("--verbose", is_flag=True, help="显示调试信息。")
+def search(query, n_results, output_dir, trim, save_top, threshold, overlay, backend, model, quantize, remote_url, remote_api_key, verbose):
+    """使用自然语言 QUERY 搜索已索引的视频。"""
     from .embedder import get_embedder, reset_embedder
     from .local_embedder import normalize_model_key
     from .search import search_footage
@@ -588,9 +623,11 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
     output_dir = os.path.expanduser(output_dir)
 
     try:
-        # --model implies --backend local
+        # --model implies --backend local, --remote-url implies --backend remote
         if model is not None and backend is None:
             backend = "local"
+        if remote_url is not None and backend is None:
+            backend = "remote"
 
         # Normalize model key for consistent collection naming
         if model is not None:
@@ -606,43 +643,54 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
             _, detected_model = detect_index()
             model = detected_model
 
-        store = SentryStore(backend=backend, model=model)
+        # Resolve remote URL and API key
+        api_key = None
+        if backend == "remote":
+            remote_url = _resolve_remote_url(remote_url)
+            api_key = _resolve_remote_api_key(remote_api_key)
+            model = model or "Qwen/Qwen3-VL-Embedding-8B"
+
+        store = SentryStore(backend=backend, model=model if backend in ("local", "remote") else None)
 
         if store.get_stats()["total_chunks"] == 0:
             # Check if data exists under a different model
             det_backend, det_model = detect_index()
             if det_backend == backend and det_model and det_model != model:
                 click.echo(
-                    f"No footage indexed with the {model} model. "
-                    f"Your index uses {det_model}.\n\n"
-                    f"Try: sentrysearch search \"{query}\" --model {det_model}"
+                    f"未使用 {model} 模型索引视频。"
+                    f"你的索引使用的是 {det_model}。\n\n"
+                    f"尝试：sentrysearch search \"{query}\" --model {det_model}"
                 )
             elif det_backend and det_backend != backend:
                 click.echo(
-                    f"No footage indexed with the {backend} backend. "
-                    f"Your index uses {det_backend}."
+                    f"未使用 {backend} 后端索引视频。"
+                    f"你的索引使用的是 {det_backend}。"
                 )
             else:
                 click.echo(
-                    "No indexed footage found. "
-                    "Run `sentrysearch index <directory>` first."
+                    "未找到已索引的视频。"
+                    "请先运行 `sentrysearch index <目录>`。"
                 )
             return
 
         if backend == "local":
             click.secho(
-                "Tip: `sentrysearch shell` keeps the model loaded across queries.",
+                "提示：`sentrysearch shell` 可在多次查询间保持模型加载状态。",
                 fg="yellow", err=True,
             )
 
-        get_embedder(backend, model=model, quantize=quantize)
+        get_embedder(
+            backend, model=model, quantize=quantize,
+            base_url=remote_url if backend == "remote" else None,
+            api_key=api_key if backend == "remote" else None,
+        )
 
         # Ensure we fetch enough results for --save-top
         if save_top is not None and save_top > n_results:
             n_results = save_top
 
         if verbose:
-            click.echo(f"  [verbose] backend={backend}, similarity threshold: {threshold}", err=True)
+            click.echo(f"  [verbose] 后端={backend}, 相似度阈值：{threshold}", err=True)
 
         results = search_footage(query, store, n_results=n_results, verbose=verbose)
         _present_results(results, threshold, trim, save_top, output_dir, overlay, verbose)
@@ -654,13 +702,14 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
 
 
 def _present_results(results, threshold, trim, save_top, output_dir, overlay, verbose):
+    """格式化并展示搜索结果。"""
     if not results:
         click.echo(
-            "No results found.\n\n"
-            "Suggestions:\n"
-            "  - Try a broader or different query\n"
-            "  - Re-index with smaller --chunk-duration for finer granularity\n"
-            "  - Check `sentrysearch stats` to see what's indexed"
+            "未找到结果。\n\n"
+            "建议：\n"
+            "  - 尝试更广泛或不同的查询\n"
+            "  - 使用更小的 --chunk-duration 重新索引以获得更细粒度\n"
+            "  - 运行 `sentrysearch stats` 查看已索引内容"
         )
         return
 
@@ -669,7 +718,7 @@ def _present_results(results, threshold, trim, save_top, output_dir, overlay, ve
 
     if low_confidence and not trim:
         click.secho(
-            f"(low confidence — best score: {best_score:.2f})",
+            f"（置信度较低 — 最高得分：{best_score:.2f}）",
             fg="yellow",
             err=True,
         )
@@ -688,8 +737,8 @@ def _present_results(results, threshold, trim, save_top, output_dir, overlay, ve
     if should_trim:
         if low_confidence:
             if not click.confirm(
-                f"No confident match found (best score: {best_score:.2f}). "
-                "Show results anyway?",
+                f"未找到可信匹配（最高得分：{best_score:.2f}）。"
+                "仍要显示结果吗？",
                 default=False,
             ):
                 return
@@ -705,7 +754,7 @@ def _present_results(results, threshold, trim, save_top, output_dir, overlay, ve
                     clip_path, r["source_file"],
                     r["start_time"], r["end_time"],
                 )
-            click.echo(f"\nSaved clip: {clip_path}")
+            click.echo(f"\n已保存剪辑：{clip_path}")
 
         if clip_paths:
             _cache_last_clip(clip_paths[0])
@@ -715,27 +764,31 @@ def _present_results(results, threshold, trim, save_top, output_dir, overlay, ve
 @cli.command()
 @click.argument("image", type=click.Path(exists=True, dir_okay=False))
 @click.option("-n", "--results", "n_results", default=5, show_default=True,
-              help="Number of results to return.")
+              help="返回结果数量。")
 @click.option("-o", "--output-dir", default="~/sentrysearch_clips", show_default=True,
-              help="Directory to save trimmed clips.")
+              help="保存剪辑视频的目录。")
 @click.option("--trim/--no-trim", default=True, show_default=True,
-              help="Trim and save the top result as a clip.")
+              help="截取并保存排名最高的结果为剪辑视频。")
 @click.option("--save-top", default=None, type=click.IntRange(min=1),
-              help="Save the top N matches as separate clips.")
+              help="保存前 N 个匹配的剪辑视频。")
 @click.option("--threshold", default=0.41, show_default=True, type=float,
-              help="Minimum similarity score to consider a confident match.")
+              help="视为可信匹配的最低相似度分数。")
 @click.option("--overlay/--no-overlay", default=False, show_default=True,
-              help="Apply Tesla telemetry overlay to saved clips.")
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
-              help="Embedding backend (auto-detected from index if omitted).")
+              help="对保存的剪辑视频应用 Tesla 遥测叠加层。")
+@click.option("--backend", type=click.Choice(["gemini", "local", "remote"]), default=None,
+              help="嵌入后端（省略时从索引自动检测）。")
 @click.option("--model", default=None,
-              help="Model for local backend (default: auto-detect from index).")
+              help="本地后端模型（默认从索引自动检测）。")
 @click.option("--quantize/--no-quantize", default=None,
-              help="Enable/disable 4-bit quantization for local backend.")
-@click.option("--verbose", is_flag=True, help="Show debug info.")
+              help="启用/禁用本地后端的 4-bit 量化。")
+@click.option("--remote-url", default=None,
+              help="远程嵌入 API 地址。隐含 --backend remote。")
+@click.option("--remote-api-key", default=None,
+              help="远程嵌入服务 API 密钥（或设置 REMOTE_EMBED_API_KEY）。")
+@click.option("--verbose", is_flag=True, help="显示调试信息。")
 def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
-        backend, model, quantize, verbose):
-    """Search indexed footage using an IMAGE as the query."""
+        backend, model, quantize, remote_url, remote_api_key, verbose):
+    """使用 IMAGE 图片作为查询搜索已索引的视频。"""
     from .embedder import get_embedder, reset_embedder
     from .local_embedder import normalize_model_key
     from .search import search_footage_by_image
@@ -746,6 +799,8 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
     try:
         if model is not None and backend is None:
             backend = "local"
+        if remote_url is not None and backend is None:
+            backend = "remote"
         if model is not None:
             model = normalize_model_key(model)
         if backend is None:
@@ -756,24 +811,34 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
         elif backend == "local" and model is None:
             _, model = detect_index()
 
-        store = SentryStore(backend=backend, model=model)
+        api_key = None
+        if backend == "remote":
+            remote_url = _resolve_remote_url(remote_url)
+            api_key = _resolve_remote_api_key(remote_api_key)
+            model = model or "Qwen/Qwen3-VL-Embedding-8B"
+
+        store = SentryStore(backend=backend, model=model if backend in ("local", "remote") else None)
 
         if store.get_stats()["total_chunks"] == 0:
             click.echo(
-                "No indexed footage found. "
-                "Run `sentrysearch index <directory>` first."
+                "未找到已索引的视频。"
+                "请先运行 `sentrysearch index <目录>`。"
             )
             return
 
-        get_embedder(backend, model=model, quantize=quantize)
+        get_embedder(
+            backend, model=model, quantize=quantize,
+            base_url=remote_url if backend == "remote" else None,
+            api_key=api_key if backend == "remote" else None,
+        )
 
         if save_top is not None and save_top > n_results:
             n_results = save_top
 
         if verbose:
             click.echo(
-                f"  [verbose] backend={backend}, image={image}, "
-                f"similarity threshold: {threshold}", err=True,
+                f"  [verbose] 后端={backend}, 图片={image}, "
+                f"相似度阈值：{threshold}", err=True,
             )
 
         results = search_footage_by_image(
@@ -795,12 +860,13 @@ _HISTORY_PATH = os.path.join(os.path.expanduser("~"), ".sentrysearch", "history"
 
 
 def _print_shell_results(results, threshold):
+    """在 shell 模式下打印搜索结果。"""
     if not results:
-        click.echo("  (no results)")
+        click.echo("  （无结果）")
         return
     best = results[0]["similarity_score"]
     if best < threshold:
-        click.secho(f"  (low confidence — best score: {best:.2f})", fg="yellow")
+        click.secho(f"  （置信度较低 — 最高得分：{best:.2f}）", fg="yellow")
     for i, r in enumerate(results, 1):
         basename = os.path.basename(r["source_file"])
         click.echo(
@@ -810,28 +876,31 @@ def _print_shell_results(results, threshold):
 
 
 @cli.command()
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
+@click.option("--backend", type=click.Choice(["gemini", "local", "remote"]), default=None,
               help="Embedding backend (auto-detected from index if omitted).")
 @click.option("--model", default=None,
               help="Model for local backend (default: auto-detect from index).")
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend.")
+@click.option("--remote-url", default=None,
+              help="URL of remote embedding API. Implies --backend remote.")
+@click.option("--remote-api-key", default=None,
+              help="API key for remote embedding service (or set REMOTE_EMBED_API_KEY).")
 @click.option("-n", "--results", "n_results", default=5, show_default=True,
-              help="Number of results per query.")
+              help="每次查询的结果数量。")
 @click.option("--threshold", default=0.41, show_default=True, type=float,
-              help="Minimum similarity score to consider a confident match.")
-@click.option("--verbose", is_flag=True, help="Show debug info.")
-def shell(backend, model, quantize, n_results, threshold, verbose):
-    """Start an interactive search session that keeps the model loaded.
+              help="视为可信匹配的最低相似度分数。")
+@click.option("--verbose", is_flag=True, help="显示调试信息。")
+def shell(backend, model, quantize, remote_url, remote_api_key, n_results, threshold, verbose):
+    """启动交互式搜索会话，保持模型加载状态。
 
-    Useful for running multiple queries back-to-back with the local
-    backend, which otherwise re-loads the model on every `search`
-    invocation.
+    适用于使用本地后端连续执行多次查询的场景，
+    否则每次 `search` 调用都会重新加载模型。
 
-    Meta-commands:
-      :n <int>   change number of results
-      :help      show help
-      :quit      exit (Ctrl-D also works)
+    元命令：
+      :n <整数>  更改结果数量
+      :help      显示帮助
+      :quit      退出（Ctrl-D 也可用）
     """
     from .embedder import get_embedder, reset_embedder
     from .local_embedder import normalize_model_key
@@ -842,6 +911,8 @@ def shell(backend, model, quantize, n_results, threshold, verbose):
         # Resolve backend/model (mirrors `search`)
         if model is not None and backend is None:
             backend = "local"
+        if remote_url is not None and backend is None:
+            backend = "remote"
         if model is not None:
             model = normalize_model_key(model)
         if backend is None:
@@ -852,15 +923,25 @@ def shell(backend, model, quantize, n_results, threshold, verbose):
         elif backend == "local" and model is None:
             _, model = detect_index()
 
+        api_key = None
+        if backend == "remote":
+            remote_url = _resolve_remote_url(remote_url)
+            api_key = _resolve_remote_api_key(remote_api_key)
+            model = model or "Qwen/Qwen3-VL-Embedding-8B"
+
         store = SentryStore(backend=backend, model=model)
         stats = store.get_stats()
         if stats["total_chunks"] == 0:
-            click.echo("No indexed footage. Run `sentrysearch index <dir>` first.")
+            click.echo("未找到已索引的视频。请先运行 `sentrysearch index <目录>`。")
             return
 
         label = backend + (f" ({model})" if model else "")
-        click.echo(f"Loading {label}...")
-        get_embedder(backend, model=model, quantize=quantize)
+        click.echo(f"正在加载 {label}...")
+        get_embedder(
+            backend, model=model, quantize=quantize,
+            base_url=remote_url if backend == "remote" else None,
+            api_key=api_key if backend == "remote" else None,
+        )
 
         # Readline for arrow-key history and persistent history file
         try:
@@ -876,8 +957,8 @@ def shell(backend, model, quantize, n_results, threshold, verbose):
             readline = None
 
         click.secho(
-            f"Ready. {stats['total_chunks']} chunks indexed. "
-            "Type a query, :help for commands, :quit to exit.",
+            f"就绪。已索引 {stats['total_chunks']} 个片段。"
+            "输入查询，:help 查看命令，:quit 退出。",
             fg="green",
         )
 
@@ -901,10 +982,10 @@ def shell(backend, model, quantize, n_results, threshold, verbose):
                     break
                 if cmd == "help":
                     click.echo(
-                        ":n <int>   set result count (current: "
-                        f"{n_results})\n"
-                        ":help      show this help\n"
-                        ":quit      exit"
+                        ":n <整数>  设置结果数量（当前："
+                        f"{n_results}）\n"
+                        ":help      显示此帮助\n"
+                        ":quit      退出"
                     )
                     continue
                 if cmd == "n":
@@ -915,9 +996,9 @@ def shell(backend, model, quantize, n_results, threshold, verbose):
                         n_results = new_n
                         click.echo(f"n_results = {n_results}")
                     except ValueError:
-                        click.secho("usage: :n <positive int>", fg="yellow")
+                        click.secho("用法：:n <正整数>", fg="yellow")
                     continue
-                click.secho(f"unknown command: :{cmd}", fg="yellow")
+                click.secho(f"未知命令：:{cmd}", fg="yellow")
                 continue
 
             try:
@@ -925,7 +1006,7 @@ def shell(backend, model, quantize, n_results, threshold, verbose):
                     query, store, n_results=n_results, verbose=verbose,
                 )
             except Exception as e:
-                click.secho(f"Error: {e}", fg="red")
+                click.secho(f"错误：{e}", fg="red")
                 continue
 
             _print_shell_results(results, threshold)
@@ -949,9 +1030,9 @@ def shell(backend, model, quantize, n_results, threshold, verbose):
 @cli.command()
 @click.argument("video", type=click.Path(exists=True, dir_okay=False))
 @click.option("-o", "--output", default=None,
-              help="Output path (default: <video>_overlay.mp4).")
+              help="输出路径（默认 <视频>_overlay.mp4）。")
 def overlay(video, output):
-    """Apply Tesla telemetry overlay to a VIDEO file for testing."""
+    """将 Tesla 遥测叠加层应用到 VIDEO 文件（用于测试）。"""
     from .chunker import _get_video_duration
 
     video = os.path.abspath(video)
@@ -970,7 +1051,7 @@ def overlay(video, output):
         overlay_path = _overlay_output_path(video)
         if output != overlay_path and os.path.isfile(overlay_path):
             os.replace(overlay_path, output)
-        click.secho(f"Saved: {output}", fg="green")
+        click.secho(f"已保存：{output}", fg="green")
         _cache_last_clip(output)
         _open_file(output)
     else:
@@ -983,7 +1064,7 @@ def overlay(video, output):
 
 @cli.command()
 def stats():
-    """Print index statistics."""
+    """打印索引统计信息。"""
     from .store import SentryStore, detect_index
 
     backend, model = detect_index()
@@ -993,19 +1074,19 @@ def stats():
     s = store.get_stats()
 
     if s["total_chunks"] == 0:
-        click.echo("Index is empty. Run `sentrysearch index <directory>` first.")
+        click.echo("索引为空。请先运行 `sentrysearch index <目录>`。")
         return
 
-    click.echo(f"Total chunks:  {s['total_chunks']}")
-    click.echo(f"Source files:  {s['unique_source_files']}")
+    click.echo(f"总片段数：    {s['total_chunks']}")
+    click.echo(f"源文件数：    {s['unique_source_files']}")
     backend_label = store.get_backend()
     if model:
         backend_label += f" ({model})"
-    click.echo(f"Backend:       {backend_label}")
-    click.echo("\nIndexed files:")
+    click.echo(f"后端：        {backend_label}")
+    click.echo("\n已索引的文件：")
     for f in s["source_files"]:
         exists = os.path.exists(f)
-        label = "" if exists else "  [missing]"
+        label = "" if exists else "  [缺失]"
         click.echo(f"  {f}{label}")
 
 
@@ -1014,13 +1095,13 @@ def stats():
 # -----------------------------------------------------------------------
 
 @cli.command()
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
+@click.option("--backend", type=click.Choice(["gemini", "local", "remote"]), default=None,
               help="Backend to reset (auto-detected if omitted).")
 @click.option("--model", default=None,
               help="Model to reset (auto-detected if omitted). Implies --backend local.")
-@click.confirmation_option(prompt="This will delete all indexed data. Continue?")
+@click.confirmation_option(prompt="这将删除所有已索引的数据。是否继续？")
 def reset(backend, model):
-    """Delete all indexed data."""
+    """删除所有已索引的数据。"""
     from .store import SentryStore, detect_index
 
     if model is not None and backend is None:
@@ -1035,13 +1116,13 @@ def reset(backend, model):
     s = store.get_stats()
 
     if s["total_chunks"] == 0:
-        click.echo("Index is already empty.")
+        click.echo("索引已经为空。")
         return
 
     for f in s["source_files"]:
         store.remove_file(f)
 
-    click.echo(f"Removed {s['total_chunks']} chunks from {s['unique_source_files']} files.")
+    click.echo(f"已从 {s['unique_source_files']} 个文件中删除 {s['total_chunks']} 个片段。")
 
 
 # -----------------------------------------------------------------------
@@ -1050,14 +1131,14 @@ def reset(backend, model):
 
 @cli.command()
 @click.argument("files", nargs=-1, required=True)
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
-              help="Backend to remove from (auto-detected if omitted).")
+@click.option("--backend", type=click.Choice(["gemini", "local", "remote"]), default=None,
+              help="要从中删除的后端（省略时自动检测）。")
 @click.option("--model", default=None,
-              help="Model to remove from (auto-detected if omitted). Implies --backend local.")
+              help="要从中删除的模型（省略时自动检测）。隐含 --backend local。")
 def remove(files, backend, model):
-    """Remove specific files from the index.
+    """从索引中删除指定文件。
 
-    Accepts full paths or substrings that match indexed file paths.
+    接受完整路径或匹配已索引文件路径的子字符串。
     """
     from .store import SentryStore, detect_index
 
@@ -1073,23 +1154,23 @@ def remove(files, backend, model):
     s = store.get_stats()
 
     if s["total_chunks"] == 0:
-        click.echo("Index is empty.")
+        click.echo("索引为空。")
         return
 
     total_removed = 0
     for pattern in files:
-        # Match against indexed source files (substring match)
+        # 匹配已索引的源文件（子字符串匹配）
         matches = [f for f in s["source_files"] if pattern in f]
         if not matches:
-            click.echo(f"No indexed files matching '{pattern}'")
+            click.echo(f"没有匹配 '{pattern}' 的已索引文件")
             continue
         for source_file in matches:
             removed = store.remove_file(source_file)
-            click.echo(f"Removed {removed} chunks from {source_file}")
+            click.echo(f"已从 {source_file} 删除 {removed} 个片段")
             total_removed += removed
 
     if total_removed:
-        click.echo(f"\nTotal: removed {total_removed} chunks.")
+        click.echo(f"\n总计：已删除 {total_removed} 个片段。")
 
 
 # -----------------------------------------------------------------------
@@ -1098,12 +1179,12 @@ def remove(files, backend, model):
 
 @cli.group()
 def dlq():
-    """Inspect or clear the dead-letter queue of failed chunks."""
+    """查看或清空失败片段的死信队列。"""
 
 
 @dlq.command("list")
 def dlq_list():
-    """Show chunks that failed to embed."""
+    """显示嵌入失败的片段。"""
     from datetime import datetime
 
     from .dlq import DeadLetterQueue
@@ -1111,10 +1192,10 @@ def dlq_list():
     q = DeadLetterQueue()
     entries = q.entries()
     if not entries:
-        click.echo("DLQ is empty.")
+        click.echo("DLQ 为空。")
         return
 
-    click.echo(f"{len(entries)} chunk(s) in the DLQ:\n")
+    click.echo(f"DLQ 中有 {len(entries)} 个片段：\n")
     for chunk_id, info in sorted(
         entries.items(), key=lambda kv: kv[1]["last_attempt"]
     ):
@@ -1125,18 +1206,18 @@ def dlq_list():
             f"@ {_fmt_time(info['start_time'])}-{_fmt_time(info['end_time'])}  "
             f"(attempts={info['attempts']}, last={ts})"
         )
-        click.echo(f"    error: {info['error']}")
+        click.echo(f"    错误：{info['error']}")
     click.echo(
-        "\nRetry with: sentrysearch index <directory> --retry-failed"
+        "\n使用以下命令重试：sentrysearch index <目录> --retry-failed"
     )
 
 
 @dlq.command("clear")
-@click.confirmation_option(prompt="Clear all DLQ entries?")
+@click.confirmation_option(prompt="清除所有 DLQ 条目？")
 def dlq_clear():
-    """Remove all entries from the dead-letter queue."""
+    """从死信队列中删除所有条目。"""
     from .dlq import DeadLetterQueue
 
     q = DeadLetterQueue()
     count = q.clear()
-    click.echo(f"Cleared {count} DLQ entries.")
+    click.echo(f"已清除 {count} 个 DLQ 条目。")
