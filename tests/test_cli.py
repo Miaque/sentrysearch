@@ -355,6 +355,174 @@ class TestIndexCommand:
         assert "overlap" in result.output.lower()
 
 
+class TestIndexImagesCommand:
+    def test_help_includes_command_options(self, runner):
+        result = runner.invoke(cli, ["index-images", "--help"])
+        assert result.exit_code == 0
+        assert "DIRECTORY" in result.output
+        assert "--backend" in result.output
+        assert "--remote-url" in result.output
+        assert "--verbose" in result.output
+
+    def test_directory_not_found_errors(self, runner):
+        result = runner.invoke(cli, ["index-images", "/nonexistent/images"])
+        assert result.exit_code != 0
+
+    def test_empty_directory_succeeds_without_indexing(self, runner, tmp_path):
+        d = tmp_path / "images"
+        d.mkdir()
+
+        with patch("sentrysearch.cli.get_embedder", return_value=MagicMock()) as mock_get, \
+             patch("sentrysearch.cli.scan_image_directory", return_value=[]) as mock_scan, \
+             patch("sentrysearch.cli.index_image_directory") as mock_index, \
+             patch("sentrysearch.cli.reset_embedder") as mock_reset:
+            result = runner.invoke(cli, ["index-images", str(d)])
+
+        assert result.exit_code == 0, result.output
+        mock_get.assert_called_once_with(
+            "gemini", model=None, quantize=None, base_url=None, api_key=None,
+        )
+        mock_scan.assert_called_once_with(str(d))
+        mock_index.assert_not_called()
+        mock_reset.assert_called_once()
+        assert "未找到支持的图片文件" in result.output
+
+    def test_indexes_scanned_images_and_prints_summary(self, runner, tmp_path):
+        d = tmp_path / "images"
+        d.mkdir()
+        image = d / "a.jpg"
+        image.write_bytes(b"fake")
+        store = MagicMock()
+
+        with patch("sentrysearch.cli.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.cli.SentryStore", return_value=store) as mock_store_cls, \
+             patch("sentrysearch.cli.scan_image_directory", return_value=[str(image)]), \
+             patch("sentrysearch.cli.index_image_directory",
+                   return_value=(1, 2, 3)) as mock_index:
+            result = runner.invoke(cli, ["index-images", str(d)])
+
+        assert result.exit_code == 0, result.output
+        mock_store_cls.assert_called_once_with(
+            backend="gemini", model=None, collection_type="image",
+        )
+        mock_index.assert_called_once_with(str(d), store, verbose=False)
+        assert "1" in result.output
+        assert "2" in result.output
+        assert "3" in result.output
+        assert "总计：1 张图片" in result.output
+
+    def test_verbose_succeeds(self, runner, tmp_path):
+        d = tmp_path / "images"
+        d.mkdir()
+        image = d / "a.png"
+        image.write_bytes(b"fake")
+        store = MagicMock()
+        store._client._identifier = "/tmp/db"
+
+        with patch("sentrysearch.cli.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.cli.SentryStore", return_value=store), \
+             patch("sentrysearch.cli.scan_image_directory", return_value=[str(image)]), \
+             patch("sentrysearch.cli.index_image_directory",
+                   return_value=(1, 0, 0)) as mock_index:
+            result = runner.invoke(cli, ["index-images", str(d), "--verbose"])
+
+        assert result.exit_code == 0, result.output
+        mock_index.assert_called_once_with(str(d), store, verbose=True)
+        assert "[verbose]" in result.output
+
+
+class TestSearchImagesCommand:
+    def test_help_includes_threshold_and_rerank(self, runner):
+        result = runner.invoke(cli, ["search-images", "--help"])
+        assert result.exit_code == 0
+        assert "--threshold" in result.output
+        assert "--rerank" in result.output
+
+    def test_missing_file_errors(self, runner):
+        result = runner.invoke(cli, ["search-images", "/nonexistent/q.jpg"])
+        assert result.exit_code != 0
+
+    def test_empty_image_index_prints_index_message(self, runner, tmp_path):
+        image = tmp_path / "q.jpg"
+        image.write_bytes(b"fake")
+        store = MagicMock()
+        store.get_stats.return_value = {"total_chunks": 0}
+
+        with patch("sentrysearch.cli.detect_image_index", return_value=(None, None)), \
+             patch("sentrysearch.cli.SentryStore", return_value=store), \
+             patch("sentrysearch.cli.get_embedder") as mock_get:
+            result = runner.invoke(cli, ["search-images", str(image)])
+
+        assert result.exit_code == 0, result.output
+        mock_get.assert_not_called()
+        assert "未找到已索引的图片" in result.output
+        assert "sentrysearch index-images <目录>" in result.output
+
+    def test_finds_mocked_results_and_prints_source_score(self, runner, tmp_path):
+        image = tmp_path / "q.jpg"
+        image.write_bytes(b"fake")
+        store = MagicMock()
+        store.get_stats.return_value = {"total_chunks": 3}
+
+        with patch("sentrysearch.cli.detect_image_index", return_value=("gemini", None)), \
+             patch("sentrysearch.cli.SentryStore", return_value=store), \
+             patch("sentrysearch.cli.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.cli.search_images", return_value=[
+                 {"source_file": "/images/car.jpg", "similarity_score": 0.91},
+             ]) as mock_search:
+            result = runner.invoke(cli, ["search-images", str(image)])
+
+        assert result.exit_code == 0, result.output
+        mock_search.assert_called_once()
+        assert "#1 [0.91]" in result.output
+        assert "car.jpg" in result.output
+
+    def test_threshold_hides_low_confidence_results(self, runner, tmp_path):
+        image = tmp_path / "q.jpg"
+        image.write_bytes(b"fake")
+        store = MagicMock()
+        store.get_stats.return_value = {"total_chunks": 3}
+
+        with patch("sentrysearch.cli.detect_image_index", return_value=("gemini", None)), \
+             patch("sentrysearch.cli.SentryStore", return_value=store), \
+             patch("sentrysearch.cli.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.cli.search_images", return_value=[
+                 {"source_file": "/images/low.jpg", "similarity_score": 0.20},
+             ]):
+            result = runner.invoke(cli, [
+                "search-images", str(image), "--threshold", "0.7",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "置信度较低" in result.output
+        assert "low.jpg" not in result.output
+
+    def test_rerank_passes_remote_reranker_to_search_images(self, runner, tmp_path):
+        image = tmp_path / "q.jpg"
+        image.write_bytes(b"fake")
+        store = MagicMock()
+        store.get_stats.return_value = {"total_chunks": 3}
+        reranker = MagicMock()
+
+        with patch("sentrysearch.cli.SentryStore", return_value=store), \
+             patch("sentrysearch.cli.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.cli.search_images", return_value=[]) as mock_search, \
+             patch("sentrysearch.reranker.RemoteReranker",
+                   return_value=reranker) as mock_reranker:
+            result = runner.invoke(cli, [
+                "search-images", str(image), "--backend", "remote",
+                "--remote-url", "http://localhost:8000",
+                "--remote-api-key", "secret", "--rerank",
+            ])
+
+        assert result.exit_code == 0, result.output
+        mock_reranker.assert_called_once_with(
+            "http://localhost:8000", api_key="secret",
+        )
+        assert mock_search.call_args.kwargs["reranker"] is reranker
+        reranker.close.assert_called_once()
+
+
 class TestShellCommand:
     @pytest.fixture(autouse=True)
     def _isolate_history(self, tmp_path):

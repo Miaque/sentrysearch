@@ -8,6 +8,15 @@ import subprocess
 import click
 from dotenv import load_dotenv
 
+from .embedder import get_embedder, reset_embedder
+from .image_indexer import (
+    SUPPORTED_IMAGE_EXTENSIONS,
+    index_image_directory,
+    scan_image_directory,
+)
+from .search import search_images
+from .store import SentryStore, detect_image_index
+
 _ENV_PATH = os.path.join(os.path.expanduser("~"), ".sentrysearch", ".env")
 
 # Load from stable config location first, then cwd as fallback
@@ -580,6 +589,226 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
     except Exception as e:
         _handle_error(e)
     finally:
+        reset_embedder()
+
+
+# -----------------------------------------------------------------------
+# image index
+# -----------------------------------------------------------------------
+
+@cli.command("index-images")
+@click.argument("directory", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.option("--backend", type=click.Choice(["gemini", "local", "remote"]), default=None,
+              help="嵌入后端（默认 gemini，设置 --model 时为 local）。")
+@click.option("--model", default=None, show_default=False,
+              help="本地后端模型：qwen8b、qwen2b 或 HuggingFace ID "
+                   "（默认自动检测硬件）。隐含 --backend local。")
+@click.option("--quantize/--no-quantize", default=None,
+              help="启用/禁用本地后端的 4-bit 量化（默认自动检测）。")
+@click.option("--remote-url", default=None,
+              help="远程嵌入 API 地址（如 http://localhost:8000）。隐含 --backend remote。")
+@click.option("--remote-api-key", default=None,
+              help="远程嵌入服务 API 密钥（或设置 REMOTE_EMBED_API_KEY）。")
+@click.option("--verbose", is_flag=True, help="显示调试信息。")
+def index_images(directory, backend, model, quantize, remote_url, remote_api_key, verbose):
+    """将 DIRECTORY 中的图片文件编入图片索引。"""
+    from .local_embedder import detect_default_model, normalize_model_key
+
+    api_key = None
+    try:
+        if model is not None and backend is None:
+            backend = "local"
+        if remote_url is not None and backend is None:
+            backend = "remote"
+        if backend is None:
+            backend = "gemini"
+
+        if backend == "local" and model is None:
+            model = detect_default_model()
+            click.echo(f"自动检测到模型：{model}", err=True)
+
+        if backend == "local":
+            model = normalize_model_key(model)
+
+        if backend == "remote":
+            remote_url = _resolve_remote_url(remote_url)
+            api_key = _resolve_remote_api_key(remote_api_key)
+            model = model or "Qwen/Qwen3-VL-Embedding-8B"
+
+        get_embedder(
+            backend, model=model, quantize=quantize,
+            base_url=remote_url if backend == "remote" else None,
+            api_key=api_key if backend == "remote" else None,
+        )
+
+        images = scan_image_directory(directory)
+        if not images:
+            supported = ", ".join(sorted(SUPPORTED_IMAGE_EXTENSIONS))
+            click.echo(f"未找到支持的图片文件（{supported}）。")
+            return
+
+        store = SentryStore(
+            backend=backend,
+            model=model if backend in ("local", "remote") else None,
+            collection_type="image",
+        )
+
+        if verbose:
+            click.echo(f"[verbose] 数据库路径：{store._client._identifier}", err=True)
+            click.echo(f"[verbose] 后端={backend}, 图片数={len(images)}", err=True)
+
+        new, skipped, failed = index_image_directory(directory, store, verbose=verbose)
+        click.echo(
+            f"已索引 {new} 张新图片，跳过 {skipped} 张，失败 {failed} 张。"
+            f"总计：{len(images)} 张图片。"
+        )
+
+    except Exception as e:
+        _handle_error(e)
+    finally:
+        reset_embedder()
+
+
+# -----------------------------------------------------------------------
+# image search
+# -----------------------------------------------------------------------
+
+def _present_image_results(results, threshold, verbose):
+    """格式化并展示图片搜索结果。"""
+    if not results:
+        click.echo(
+            "未找到图片结果。\n\n"
+            "建议：\n"
+            "  - 尝试不同的查询图片\n"
+            "  - 运行 `sentrysearch index-images <目录>` 编入更多图片"
+        )
+        return
+
+    best_score = results[0]["similarity_score"]
+    confident_results = [
+        r for r in results if r["similarity_score"] >= threshold
+    ]
+
+    if best_score < threshold:
+        click.secho(
+            f"（置信度较低 — 最高得分：{best_score:.2f}）",
+            fg="yellow",
+            err=True,
+        )
+
+    if not confident_results:
+        click.echo("未找到达到阈值的图片结果。")
+        return
+
+    for i, r in enumerate(confident_results, 1):
+        basename = os.path.basename(r["source_file"])
+        score = r["similarity_score"]
+        if verbose:
+            click.echo(f"  #{i} [{score:.6f}] {basename}")
+        else:
+            click.echo(f"  #{i} [{score:.2f}] {basename}")
+
+
+@cli.command("search-images")
+@click.argument("image", type=click.Path(exists=True, dir_okay=False))
+@click.option("-n", "--results", "n_results", default=5, show_default=True,
+              help="返回结果数量。")
+@click.option("--threshold", default=0.7, show_default=True, type=float,
+              help="视为可信匹配的最低相似度分数。")
+@click.option("--rerank", is_flag=True,
+              help="使用远程服务对候选图片结果重新排序。")
+@click.option("--backend", type=click.Choice(["gemini", "local", "remote"]), default=None,
+              help="嵌入后端（省略时从图片索引自动检测）。")
+@click.option("--model", default=None,
+              help="本地后端模型（默认从图片索引自动检测）。")
+@click.option("--quantize/--no-quantize", default=None,
+              help="启用/禁用本地后端的 4-bit 量化。")
+@click.option("--remote-url", default=None,
+              help="远程嵌入 API 地址。隐含 --backend remote。")
+@click.option("--remote-api-key", default=None,
+              help="远程嵌入服务 API 密钥（或设置 REMOTE_EMBED_API_KEY）。")
+@click.option("--verbose", is_flag=True, help="显示调试信息。")
+def search_images_cmd(image, n_results, threshold, rerank, backend, model,
+                      quantize, remote_url, remote_api_key, verbose):
+    """使用 IMAGE 图片作为查询搜索已索引的图片。"""
+    from .local_embedder import normalize_model_key
+
+    api_key = None
+    reranker_inst = None
+    try:
+        if model is not None and backend is None:
+            backend = "local"
+        if remote_url is not None and backend is None:
+            backend = "remote"
+        if model is not None:
+            model = normalize_model_key(model)
+        if backend is None:
+            detected_backend, detected_model = detect_image_index()
+            backend = detected_backend or "gemini"
+            if model is None:
+                model = detected_model
+        elif backend == "local" and model is None:
+            _, model = detect_image_index()
+
+        if backend == "remote":
+            remote_url = _resolve_remote_url(remote_url)
+            api_key = _resolve_remote_api_key(remote_api_key)
+            model = model or "Qwen/Qwen3-VL-Embedding-8B"
+
+        store = SentryStore(
+            backend=backend,
+            model=model if backend in ("local", "remote") else None,
+            collection_type="image",
+        )
+
+        if store.get_stats()["total_chunks"] == 0:
+            click.echo(
+                "未找到已索引的图片。"
+                "请先运行 `sentrysearch index-images <目录>`。"
+            )
+            return
+
+        get_embedder(
+            backend, model=model, quantize=quantize,
+            base_url=remote_url if backend == "remote" else None,
+            api_key=api_key if backend == "remote" else None,
+        )
+
+        if rerank:
+            if backend != "remote":
+                click.secho(
+                    "（警告：--rerank 仅支持 remote 后端，继续使用向量搜索。）",
+                    fg="yellow", err=True,
+                )
+            else:
+                try:
+                    from .reranker import RemoteReranker
+
+                    reranker_inst = RemoteReranker(remote_url, api_key=api_key)
+                except Exception as exc:
+                    click.secho(
+                        f"（警告：无法启用重排，继续使用向量搜索：{exc}）",
+                        fg="yellow", err=True,
+                    )
+                    reranker_inst = None
+
+        if verbose:
+            click.echo(
+                f"  [verbose] 后端={backend}, 图片={image}, "
+                f"相似度阈值：{threshold}", err=True,
+            )
+
+        results = search_images(
+            image, store, n_results=n_results, verbose=verbose,
+            reranker=reranker_inst,
+        )
+        _present_image_results(results, threshold, verbose)
+
+    except Exception as e:
+        _handle_error(e)
+    finally:
+        if reranker_inst is not None:
+            reranker_inst.close()
         reset_embedder()
 
 
