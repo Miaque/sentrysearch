@@ -1,10 +1,50 @@
 """Tests for sentrysearch.store."""
 
+import hashlib
 import math
 
 import pytest
 
 from sentrysearch.store import _make_chunk_id
+
+
+class TestImageCollectionName:
+    def test_gemini(self):
+        from sentrysearch.store import _image_collection_name
+
+        assert _image_collection_name("gemini") == "image_index"
+
+    def test_local(self):
+        from sentrysearch.store import _image_collection_name
+
+        assert _image_collection_name("local") == "image_index_local"
+
+    def test_local_model(self):
+        from sentrysearch.store import _image_collection_name
+
+        assert _image_collection_name("local", "qwen2b") == "image_index_local_qwen2b"
+
+    def test_remote(self):
+        from sentrysearch.store import _image_collection_name
+
+        assert _image_collection_name("remote") == "image_index_remote"
+
+    def test_remote_model(self):
+        from sentrysearch.store import _image_collection_name
+
+        assert (
+            _image_collection_name("remote", "Qwen/Qwen3-VL-Embedding-8B")
+            == "image_index_remote_Qwen/Qwen3-VL-Embedding-8B"
+        )
+
+
+class TestMakeImageId:
+    def test_uses_source_file_sha256_prefix(self):
+        from sentrysearch.store import _make_image_id
+
+        source_file = "/path/to/image.jpg"
+        expected = hashlib.sha256(source_file.encode()).hexdigest()[:16]
+        assert _make_image_id(source_file) == expected
 
 
 class TestMakeChunkId:
@@ -144,6 +184,38 @@ class TestSentryStore:
         assert len(results) == 1
         assert results[0]["score"] > 0.99
 
+    def test_add_image_and_search(self, tmp_path):
+        from sentrysearch.store import SentryStore
+
+        store = SentryStore(
+            db_path=tmp_path / "db",
+            backend="gemini",
+            collection_type="image",
+        )
+        emb = _make_embedding(seed=7.0)
+        store.add_image("/path/to/image.jpg", emb)
+
+        results = store.search(emb, n_results=1)
+        assert len(results) == 1
+        assert results[0]["source_file"] == "/path/to/image.jpg"
+        assert results[0]["start_time"] == 0.0
+        assert results[0]["end_time"] == 0.0
+        assert results[0]["score"] > 0.99
+
+    def test_add_image_idempotent(self, tmp_path):
+        from sentrysearch.store import SentryStore
+
+        store = SentryStore(
+            db_path=tmp_path / "db",
+            backend="gemini",
+            collection_type="image",
+        )
+        emb = _make_embedding(seed=7.0)
+        store.add_image("/path/to/image.jpg", emb)
+        store.add_image("/path/to/image.jpg", emb)
+
+        assert store.get_stats()["total_chunks"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Backend support
@@ -218,6 +290,121 @@ class TestStoreBackend:
 
         with pytest.raises(BackendMismatchError, match="gemini"):
             tmp_store.check_backend("local")
+
+    def test_image_gemini_collection_name(self, tmp_path):
+        from sentrysearch.store import SentryStore
+
+        store = SentryStore(
+            db_path=tmp_path / "db",
+            backend="gemini",
+            collection_type="image",
+        )
+        assert store.collection.name == "image_index"
+
+    def test_image_local_model_collection_name(self, tmp_path):
+        from sentrysearch.store import SentryStore
+
+        store = SentryStore(
+            db_path=tmp_path / "db",
+            backend="local",
+            model="qwen2b",
+            collection_type="image",
+        )
+        assert store.collection.name == "image_index_local_qwen2b"
+
+    def test_default_collection_type_is_video(self, tmp_path):
+        from sentrysearch.store import SentryStore
+
+        store = SentryStore(db_path=tmp_path / "db")
+        assert store.collection.name == "dashcam_chunks"
+
+    def test_image_and_video_collections_are_separate(self, tmp_path):
+        from sentrysearch.store import SentryStore
+
+        db = tmp_path / "db"
+        video_store = SentryStore(db_path=db, backend="gemini")
+        image_store = SentryStore(
+            db_path=db,
+            backend="gemini",
+            collection_type="image",
+        )
+
+        emb = _make_embedding(seed=1.0)
+        image_store.add_image("/path/to/image.jpg", emb)
+
+        assert image_store.get_stats()["total_chunks"] == 1
+        assert video_store.get_stats()["total_chunks"] == 0
+
+    def test_sanitized_image_collection_names_do_not_collide(self, tmp_path):
+        from sentrysearch.store import SentryStore
+
+        db = tmp_path / "db"
+        slash_model_store = SentryStore(
+            db_path=db,
+            backend="remote",
+            model="Qwen/A",
+            collection_type="image",
+        )
+        underscore_model_store = SentryStore(
+            db_path=db,
+            backend="remote",
+            model="Qwen_A",
+            collection_type="image",
+        )
+
+        assert slash_model_store.collection.name != underscore_model_store.collection.name
+
+        slash_model_store.add_image("/path/to/slash.jpg", _make_embedding(seed=1.0))
+
+        assert slash_model_store.get_stats()["total_chunks"] == 1
+        assert underscore_model_store.get_stats()["total_chunks"] == 0
+
+    def test_image_collection_name_with_consecutive_periods_constructs(self, tmp_path):
+        from sentrysearch.store import SentryStore
+
+        store = SentryStore(
+            db_path=tmp_path / "db",
+            backend="remote",
+            model="Qwen..A",
+            collection_type="image",
+        )
+
+        store.add_image("/path/to/image.jpg", _make_embedding(seed=1.0))
+        assert store.get_stats()["total_chunks"] == 1
+
+    def test_sanitized_image_collection_name_avoids_valid_name_collision(self, tmp_path):
+        from sentrysearch.store import (
+            SentryStore,
+            _chroma_collection_name,
+            _image_collection_name,
+        )
+
+        db = tmp_path / "db"
+        invalid_model = "Qwen/A"
+        invalid_candidate = _chroma_collection_name(
+            _image_collection_name("remote", invalid_model)
+        )
+        valid_model = invalid_candidate.removeprefix("image_index_remote_")
+
+        invalid_store = SentryStore(
+            db_path=db,
+            backend="remote",
+            model=invalid_model,
+            collection_type="image",
+        )
+        valid_store = SentryStore(
+            db_path=db,
+            backend="remote",
+            model=valid_model,
+            collection_type="image",
+        )
+
+        assert invalid_store.collection.name != valid_store.collection.name
+
+        invalid_store.add_image("/path/to/invalid.jpg", _make_embedding(seed=1.0))
+
+        assert invalid_store.get_stats()["total_chunks"] == 1
+        assert valid_store.get_stats()["total_chunks"] == 0
 
 
 class TestDetectBackend:
@@ -305,3 +492,65 @@ class TestDetectIndex:
             "source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0,
         })
         assert detect_index(db) == ("gemini", None)
+
+
+class TestDetectImageIndex:
+    def test_empty_db(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_image_index
+
+        SentryStore(
+            db_path=tmp_path / "db",
+            backend="gemini",
+            collection_type="image",
+        )
+        assert detect_image_index(tmp_path / "db") == (None, None)
+
+    def test_detects_gemini(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_image_index
+
+        store = SentryStore(
+            db_path=tmp_path / "db",
+            backend="gemini",
+            collection_type="image",
+        )
+        store.add_image("/path/to/image.jpg", _make_embedding())
+        assert detect_image_index(tmp_path / "db") == ("gemini", None)
+
+    def test_detects_local_model(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_image_index
+
+        store = SentryStore(
+            db_path=tmp_path / "db",
+            backend="local",
+            model="qwen2b",
+            collection_type="image",
+        )
+        store.add_image("/path/to/image.jpg", _make_embedding())
+        assert detect_image_index(tmp_path / "db") == ("local", "qwen2b")
+
+    def test_detects_remote_model(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_image_index
+
+        model = "Qwen/Qwen3-VL-Embedding-8B"
+        store = SentryStore(
+            db_path=tmp_path / "db",
+            backend="remote",
+            model=model,
+            collection_type="image",
+        )
+        store.add_image("/path/to/image.jpg", _make_embedding())
+        assert detect_image_index(tmp_path / "db") == ("remote", model)
+
+    def test_video_index_ignored(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_image_index
+
+        store = SentryStore(db_path=tmp_path / "db", backend="gemini")
+        store.add_chunk("c1", _make_embedding(), {
+            "source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        assert detect_image_index(tmp_path / "db") == (None, None)
+
+    def test_nonexistent_path(self, tmp_path):
+        from sentrysearch.store import detect_image_index
+
+        assert detect_image_index(tmp_path / "no_such_dir") == (None, None)

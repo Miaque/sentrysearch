@@ -1,6 +1,7 @@
 """ChromaDB 向量存储。"""
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,79 @@ def _collection_name(backend: str, model: str | None = None) -> str:
         return f"dashcam_chunks_local_{model}"
     # 旧版：local 后端，未区分模型
     return "dashcam_chunks_local"
+
+
+def _image_collection_name(backend: str, model: str | None = None) -> str:
+    """返回指定后端和可选模型对应的图片 ChromaDB 集合名称。"""
+    if backend == "gemini":
+        return "image_index"
+    if backend == "remote":
+        if model:
+            return f"image_index_remote_{model}"
+        return "image_index_remote"
+    if model:
+        return f"image_index_local_{model}"
+    return "image_index_local"
+
+
+def _chroma_collection_name(name: str) -> str:
+    """返回 ChromaDB 可接受的物理集合名称。"""
+    if _is_valid_chroma_collection_name(name):
+        return name
+
+    return _hash_suffixed_collection_name(name, name)
+
+
+def _is_valid_chroma_collection_name(name: str) -> bool:
+    """检查名称是否满足当前使用到的 ChromaDB 集合名约束。"""
+    valid_name = re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9._-]{1,510}[a-zA-Z0-9])?", name)
+    return bool(valid_name) and ".." not in name
+
+
+def _hash_suffixed_collection_name(name: str, hash_input: str) -> str:
+    suffix = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+    sanitized = re.sub(r"[^a-zA-Z0-9._-]", "_", name).strip("._-")
+    sanitized = re.sub(r"\.{2,}", ".", sanitized)
+    if not sanitized:
+        sanitized = "collection"
+    max_base_len = 512 - len(suffix) - 1
+    sanitized = sanitized[:max_base_len].rstrip("._-")
+    if not sanitized:
+        sanitized = "collection"
+    return f"{sanitized}_{suffix}"
+
+
+def _resolve_chroma_collection_name(
+    client,
+    logical_name: str,
+) -> str:
+    """为逻辑集合名选择不会复用其它逻辑名的物理 ChromaDB 名称。"""
+    candidate = _chroma_collection_name(logical_name)
+    existing = {c.name for c in client.list_collections()}
+    if candidate not in existing:
+        return candidate
+
+    collection = client.get_collection(candidate)
+    meta = collection.metadata or {}
+    existing_logical_name = meta.get("logical_collection_name")
+    if existing_logical_name == logical_name:
+        return candidate
+    if existing_logical_name is None and _is_valid_chroma_collection_name(logical_name):
+        return candidate
+
+    for attempt in range(1, 100):
+        alternate = _hash_suffixed_collection_name(
+            candidate,
+            f"{logical_name}:{attempt}",
+        )
+        if alternate not in existing:
+            return alternate
+        collection = client.get_collection(alternate)
+        meta = collection.metadata or {}
+        if meta.get("logical_collection_name") == logical_name:
+            return alternate
+
+    raise RuntimeError(f"无法为集合 {logical_name} 找到未冲突的 ChromaDB 名称。")
 
 
 def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | None]:
@@ -86,6 +160,64 @@ def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | N
     return None, None
 
 
+def detect_image_index(db_path: str | Path | None = None) -> tuple[str | None, str | None]:
+    """返回第一个有数据的图片索引的 ``(backend, model)``。
+
+    如果没有图片索引包含数据则返回 ``(None, None)``。
+    优先检查 gemini，然后是带模型后缀的 local 集合，最后是 remote 集合。
+    """
+    db_path = str(db_path or DEFAULT_DB_PATH)
+    if not Path(db_path).exists():
+        return None, None
+    client = chromadb.PersistentClient(path=db_path)
+    existing = {c.name for c in client.list_collections()}
+
+    image_index = _chroma_collection_name("image_index")
+    local_prefix = "image_index_local_"
+    image_index_local = _chroma_collection_name("image_index_local")
+    remote_prefix = "image_index_remote_"
+    image_index_remote = _chroma_collection_name("image_index_remote")
+
+    if image_index in existing:
+        col = client.get_collection(image_index)
+        if col.count() > 0:
+            return "gemini", None
+
+    for name in sorted(existing):
+        if name.startswith(local_prefix):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix(local_prefix)
+                return "local", model
+
+    if image_index_local in existing:
+        col = client.get_collection(image_index_local)
+        if col.count() > 0:
+            meta = col.metadata or {}
+            return "local", meta.get("embedding_model")
+
+    for name in sorted(existing):
+        if name.startswith(remote_prefix):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix(remote_prefix)
+                return "remote", model
+
+    if image_index_remote in existing:
+        col = client.get_collection(image_index_remote)
+        if col.count() > 0:
+            meta = col.metadata or {}
+            return "remote", meta.get("embedding_model")
+
+    return None, None
+
+
 def detect_backend(db_path: str | Path | None = None) -> str | None:
     """返回已有索引数据的后端名称，如果为空则返回 None。"""
     backend, _ = detect_index(db_path)
@@ -98,21 +230,31 @@ def _make_chunk_id(source_file: str, start_time: float) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def _make_image_id(source_file: str) -> str:
+    """根据源图片路径生成确定性图片 ID。"""
+    return hashlib.sha256(source_file.encode()).hexdigest()[:16]
+
+
 class SentryStore:
     """基于 ChromaDB 的持久化向量存储。"""
 
     def __init__(self, db_path: str | Path | None = None, backend: str = "gemini",
-                 model: str | None = None):
+                 model: str | None = None, collection_type: str = "video"):
         db_path = str(db_path or DEFAULT_DB_PATH)
         Path(db_path).mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=db_path)
         self._backend = backend
         self._model = model
         # 按后端+模型分离集合，确保不兼容的向量不会混在一起。
-        col_name = _collection_name(backend, model)
+        if collection_type == "image":
+            col_name = _image_collection_name(backend, model)
+        else:
+            col_name = _collection_name(backend, model)
         metadata = {"hnsw:space": "cosine", "embedding_backend": backend}
         if model:
             metadata["embedding_model"] = model
+        metadata["logical_collection_name"] = col_name
+        col_name = _resolve_chroma_collection_name(self._client, col_name)
         self._collection = self._client.get_or_create_collection(
             name=col_name,
             metadata=metadata,
@@ -172,6 +314,18 @@ class SentryStore:
             ids=[chunk_id],
             embeddings=[embedding],
             metadatas=[meta],
+        )
+
+    def add_image(self, source_file: str, embedding: list[float]) -> None:
+        """存储单张图片的 Embedding。"""
+        self.add_chunk(
+            _make_image_id(source_file),
+            embedding,
+            {
+                "source_file": source_file,
+                "start_time": 0.0,
+                "end_time": 0.0,
+            },
         )
 
     def add_chunks(self, chunks: list[dict]) -> None:
