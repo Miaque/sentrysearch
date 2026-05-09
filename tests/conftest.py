@@ -81,6 +81,14 @@ def mock_embed_video_chunk(monkeypatch):
     return fake
 
 
+@pytest.fixture
+def mock_embed_image(monkeypatch):
+    """Patch embed_image to return a deterministic vector."""
+    fake = _fake_embedding()
+    monkeypatch.setattr("sentrysearch.embedder.embed_image", lambda *a, **kw: fake)
+    return fake
+
+
 # ---------------------------------------------------------------------------
 # Temporary ChromaDB store
 # ---------------------------------------------------------------------------
