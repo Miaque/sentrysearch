@@ -24,6 +24,13 @@ def get_embedder(backend: str = "gemini", **kwargs) -> BaseEmbedder:
             dims = kwargs.get("dimensions", 768)
             quantize = kwargs.get("quantize", None)
             _current_embedder = LocalEmbedder(model_name=model, dimensions=dims, quantize=quantize)
+        elif backend == "remote":
+            from .remote_embedder import RemoteEmbedder
+            base_url = kwargs.get("base_url", "")
+            model = kwargs.get("model", "Qwen/Qwen3-VL-Embedding-8B")
+            dims = kwargs.get("dimensions", 4096)
+            api_key = kwargs.get("api_key", None)
+            _current_embedder = RemoteEmbedder(base_url=base_url, model=model, dimensions=dims, api_key=api_key)
         else:
             raise ValueError(f"Unknown backend: {backend}")
     return _current_embedder

@@ -1,9 +1,12 @@
 __pycache__/
 .env
+.history/
+.idea/
 
 test_footage/
 sentrysearch.egg-info/
 clips_output/
+tests/images/
 
 notebooks/
 

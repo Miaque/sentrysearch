@@ -41,6 +41,28 @@ def _fake_embedding(dim: int = 768) -> list[float]:
     return [x / norm for x in vec]
 
 
+@pytest.fixture(scope="session")
+def tiny_png(tmp_path_factory):
+    """Generate a minimal valid PNG file (1x1 red pixel)."""
+    import struct
+    import zlib
+
+    def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
+        chunk = chunk_type + data
+        crc = struct.pack(">I", zlib.crc32(chunk))
+        return struct.pack(">I", len(data)) + chunk + crc
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    ihdr = _png_chunk(b"IHDR", ihdr_data)
+    raw_image = b"\x00\xff\x00\x00"  # filter byte + RGB
+    idat = _png_chunk(b"IDAT", zlib.compress(raw_image))
+    iend = _png_chunk(b"IEND", b"")
+    png_path = tmp_path_factory.mktemp("images") / "red_1x1.png"
+    png_path.write_bytes(signature + ihdr + idat + iend)
+    return str(png_path)
+
+
 @pytest.fixture
 def mock_embed_query(monkeypatch):
     """Patch embed_query to return a deterministic vector without API calls."""
