@@ -1,0 +1,63 @@
+{
+  "python.analysis.typeCheckingMode": "basic",
+  "cursorpyright.analysis.typeCheckingMode": "basic",
+  "windsurfPyright.analysis.typeCheckingMode": "basic",
+  "terminal.integrated.env.windows": {
+    "PYTHONPATH": "${workspaceFolder}"
+  },
+  "python.analysis.extraPaths": ["${workspaceFolder}"],
+  "cursorpyright.analysis.extraPaths": ["${workspaceFolder}"],
+  "windsurfPyright.analysis.extraPaths": ["${workspaceFolder}"],
+  "python.analysis.autoImportCompletions": true,
+  "cursorpyright.analysis.autoImportCompletions": true,
+  "windsurfPyright.analysis.autoImportCompletions": true,
+  "python.analysis.indexing": true,
+  "python.analysis.packageIndexDepths": [
+    {
+      "name": "",
+      "depth": 20,
+      "includeAllSymbols": true
+    }
+  ],
+  "debugpy.debugJustMyCode": true,
+  "python.testing.pytestArgs": ["-s"],
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true,
+  "files.exclude": {
+    ".idea": true,
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "logs": true,
+    "**/.history": true,
+    "backend/celerybeat-schedule.*": true,
+    "**/.ruff_cache": true
+  },
+  "python.languageServer": "Pylance",
+  "python.pyrefly.displayTypeErrors": "force-off",
+  "cursorpyright.disableLanguageServices": true,
+  "python.pyrefly.disableLanguageServices": true,
+  // Using the light mode
+  "indentRainbow.indicatorStyle": "light",
+  // we use a simple 1 pixel wide line
+  "indentRainbow.lightIndicatorStyleLineWidth": 1,
+  // the same colors as above but more visible
+  "indentRainbow.colors": [
+    "rgba(255,255,64,0.3)",
+    "rgba(127,255,127,0.3)",
+    "rgba(255,127,255,0.3)",
+    "rgba(79,236,236,0.3)"
+  ],
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "[html]": {
+    "prettier.printWidth": 180
+  },
+  "[typescript]": {
+    "prettier.printWidth": 120,
+    "prettier.tabWidth": 4,
+    "prettier.semi": false
+  },
+  "[json]": {
+    "prettier.printWidth": 80,
+    "prettier.tabWidth": 2
+  }
+}
