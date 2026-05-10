@@ -34,15 +34,20 @@ def test_rerank_calls_api_and_maps_ranked_indices_and_scores(monkeypatch):
             ],
         },
     )
-    monkeypatch.setattr(reranker, "_encode_image", lambda path: "encoded-image")
+    monkeypatch.setattr(reranker, "_encode_image", lambda path: "b64")
 
     result = reranker.rerank("query.png", _candidates(), top_n=2)
 
     reranker._client.post.assert_called_once_with(
         "/rerank",
         json={
-            "query": "data:image;base64,encoded-image",
-            "documents": ["alpha.jpg", "bravo.jpg", "charlie.jpg"],
+            "model": "Qwen/Qwen3-VL-Reranker-8B",
+            "query": {"image": "data:image;base64,b64"},
+            "documents": [
+                {"image": "data:image;base64,b64"},
+                {"image": "data:image;base64,b64"},
+                {"image": "data:image;base64,b64"},
+            ],
             "top_n": 2,
         },
     )

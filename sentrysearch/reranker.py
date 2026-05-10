@@ -1,7 +1,6 @@
 """远程图片重排序后端。"""
 
 import base64
-import os
 import sys
 
 import httpx
@@ -10,9 +9,11 @@ import httpx
 class RemoteReranker:
     """通过远程 API 对图片检索候选结果重排序。"""
 
-    def __init__(self, base_url: str, api_key: str | None = None):
+    def __init__(self, base_url: str, api_key: str | None = None,
+                 model: str = "Qwen/Qwen3-VL-Reranker-8B"):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self._model = model
         self._client = httpx.Client(
             base_url=self._base_url,
             timeout=120.0,
@@ -39,11 +40,12 @@ class RemoteReranker:
         fallback = candidates[:top_n]
         try:
             documents = [
-                os.path.basename(candidate["source_file"])
-                for candidate in candidates
+                {"image": f"data:image;base64,{self._encode_image(c['source_file'])}"}
+                for c in candidates
             ]
             body = {
-                "query": f"data:image;base64,{self._encode_image(query_image)}",
+                "model": self._model,
+                "query": {"image": f"data:image;base64,{self._encode_image(query_image)}"},
                 "documents": documents,
                 "top_n": top_n,
             }
